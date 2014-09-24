@@ -3,8 +3,8 @@ spaceMARINE
 
 Solves 2D/3D hydrodynamic problems in Eulerian framework on a Cartesian grid with Adaptive Mesh Refinement via the BoxLib library. The name is an acronym for Space Mesh Adaptive RefINEment to signify that it is an AMR code for astrophysical use; it also happens to be the name of a fighting force from the game Warhammer 40,000.
 
-Usage
------
+Modifications
+-------------
 
 Users only need to modify
  - `init_phi.f90` This should be done by writing your own routine using the included `init_template.f90` file and calling it a new name (e.g., `sedov.f90`) and then linking it via `ln -s sedov.f90 init_phi.f90`
@@ -28,6 +28,23 @@ Currently the cooling function is the only source term in place (and is currentl
     ...
     value_npoints
 where the boundary conditions specify the result at temperatures above the upper and below the lower limits. It is suggested that the lower boundary be ZERO while the upper boundary be EXTRAPOLATED.
+
+Usage
+-----
+
+The folder containing these source files should also be in the same directory as BoxLib, e.g.
+
+    code/
+        BoxLib/
+        spaceMARINE/
+
+Then it is a matter of typing
+    
+    make
+    
+to make the code. It is currently not parallelized and while there are some OpenMP commands that are present, they are not tested. Thus, running it should be
+
+    ./spacemarine
 
 Collaboration
 -------------
