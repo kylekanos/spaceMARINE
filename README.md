@@ -16,6 +16,19 @@ Users only need to modify
 
 I cannot recommend using this right now because it's not actually working. Hopefully in the near future it will work.
 
+Source Terms
+------------
+
+Currently the cooling function is the only source term in place (and is currently untested). Gravity will be added in the future (in x-direction, though it could be modified to be in any direction). The cooling function is stored in a defined-type Table (see `source_module.f90` for its definition); it expects the file to be in the format
+
+    npoints
+    lower upper dT bc_lo bc_hi
+    value_1
+    value_2
+    ...
+    value_npoints
+where the boundary conditions specify the result at temperatures above the upper and below the lower limits. It is suggested that the lower boundary be ZERO while the upper boundary be EXTRAPOLATED.
+
 Collaboration
 -------------
 
