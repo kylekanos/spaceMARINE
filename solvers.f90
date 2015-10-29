@@ -1,303 +1,165 @@
 module solvers
    use physics_declarations
    implicit none
-   integer, parameter :: dp = kind(1d0)
    integer, dimension(:,:), allocatable, save :: ivar
    
    private
    
-   public :: solver_init, minmod, limiter, hlle, roe, press
+   public :: Energy, slope_lim, press, solver, swapy
 contains
-   !> @brief initialize quick thing here
-   subroutine solver_init(nvar)
-     integer, intent(in) :: nvar
-     integer :: i
-     
-     allocate(ivar(nvar,3))
-     ivar(:,1) = [(i,i=1,nvar)]
-     ivar(:,2) = ivar(:,1); ivar(1:5,2) = [1,3,4,2,5]
-     ivar(:,3) = ivar(:,1); ivar(1:5,3) = [1,4,2,3,5]
-   end subroutine solver_init
-   
    !> @brief minmod limiter
-   elemental real(dp) function minmod(a,b)
-     real(dp), intent(in) :: a,b
-     minmod = (sign(1._dp,a)+sign(1._dp,b))*min(abs(a),abs(b))/2._dp
+   elemental real(dp_t) function minmod(a,b)
+     real(dp_t), intent(in) :: a,b
+     minmod = (sign(half,a)+sign(half,b))*min(abs(a), abs(b))
    end function minmod
    
-   !> @brief 3rd order limiter function
-   elemental real(dp) function limiter(dvp, dvm, dx)
-     real(dp), intent(in) :: dvp, dvm, dx
-     real(dp) :: r, a, b, c, q, th, eta, psi, eps
+   !> @brief impose slope limiter
+   elemental function slope_lim(y1, y2, y3) result(sl)
+     real(dp_t), intent(in) :: y1, y2, y3
+     real(dp_t) :: dqm, dqp, dqc, s, sl
+     real(dp_t) :: adqm, adqp, adqc
      
-     r = 0.1d0; eps = 1d-12
-     th = dvm/(dvp + 1d-16)
-     q = (2d0 + th)*0.3333333333333333333d0
-     
-     a = min(1.5d0, 2d0*th)
-     a = min(q, a)
-     b = max(-half*th, a)
-     c = min(q, b)
-     psi = max(zero, c)
-     
-     eta = (dvm**2 + dvp**2)/(r*dx)**2
-     if(eta <= one - eps) then
-        limiter = q
-     else if(eta >= one + eps) then
-        limiter = psi
+
+     dqm = two*(y2 - y1)			! (mid - left)
+     dqp = two*(y3 - y2)			! (right - mid)
+     dqc = half*(dqm + dqp)			! (left - right)
+     s = dqm*dqp
+     adqm = abs(dqm)
+     adqp = abs(dqp)
+     adqc = abs(dqc)
+     if(s <= zero) then
+        sl = 0d0
      else
-        limiter = half*((one - (eta - one)/eps)*q + (one + (eta - one)/eps)*psi)
+        if(adqm < adqp .and. adqm < adqc) then
+           sl = dqm
+        elseif(adqp < adqc) then
+           sl = dqp
+        else
+           sl = dqc
+        endif
      endif
-   end function limiter
-   
+   end function slope_lim
+
+   !> @brief HLL solver (3-wave state, MHD characteristiscs)
+   function solver(NP,pl,pr,eta) result(flux)
+     integer, intent(in) :: NP
+     real(dp_t), intent(in) :: pl(1:NP), pr(1:NP)
+     real(dp_t), optional :: eta
+     real(dp_t) :: flux(1:NP)
+     real(dp_t), allocatable, dimension(:) :: ur, ul, fl, fr
+     real(dp_t) :: csl, csr, sl, sr, den
+     integer :: n
+
+     allocate(ur(1:NP),ul(1:NP),fl(1:NP),fr(1:NP))
+     
+   ! speed of sounds
+     csl = fast_wavespeed(pl(1:NP))
+     csr = fast_wavespeed(pr(1:NP))
+     flux = zero
+     
+     
+   ! find max characteristic speed
+     sr = max(pl(2) + csl, pr(2) + csr)
+     sl = min(pl(2) - csl, pr(2) - csr)
+     if(present(eta)) then
+        sl = sign(abs(sl)+eta, sl)
+        sr = sign(abs(sr)+eta, sr)
+     endif
+
+     fl(1:NP) = prim_flux(pl(1:NP))
+     fr(1:NP) = prim_flux(pr(1:NP))
+!~      ul(1:NP) = conservative(pl(1:NP))
+!~      ur(1:NP) = conservative(pr(1:NP))
+!~      print '(a,5(f12.4,1x))', 'ul=',ul
+!~      print '(a,5(f12.4,1x))', 'ur=',ur
+!~      print '(2(a,1x,f16.8))','sl=',sl,', sr=',sr
+     
+   ! check states
+     if(sl > zero) then
+        flux(1:NP) = fl(1:NP)
+     elseif(sr < zero) then
+        flux(1:NP) = fr(1:NP)
+     else
+        ul(1:NP) = conservative(pl(1:NP))
+        ur(1:NP) = conservative(pr(1:NP))
+        den = one / (sl - sr + 1e-30_dp_t)
+        do n=1,NP
+           flux(n) = ( sl*sr*(ur(n) - ul(n)) + sr*fl(n) - sl*fr(n) ) * den
+        enddo !- n
+     endif
+   end function solver
+
+   !> @brief find the fast hydro wave speed from primitives
+!DEC$ ATTRIBUTES INLINE::fast_wavespeed
+   pure function fast_wavespeed(w) result(fast)
+     real(dp_t), intent(in) :: w(:)
+     real(dp_t) :: fast
+     fast = sqrt(gamma*w(5)/w(1))
+   end function fast_wavespeed
+
+    !> @brief swap x & y terms
+   subroutine swapy(v)
+     real(dp_t), intent(inout) :: v(:)
+     real(dp_t) :: aux
+     
+   ! velocity 1=y, 2=x
+     aux  = v(2)
+     v(2) = v(3)
+     v(3) = aux
+   end subroutine swapy
+
+   !> @brief swap x, y & z terms
+   subroutine swapxyz(v)
+     real(dp_t), intent(inout) :: v(:)
+     real(dp_t) :: aux(2)
+     
+   ! velocity 1=z, 2=x, 3=y
+     aux(:) = v(2:3)
+     v(2)   = v(4)
+     v(3)   = aux(2)
+     v(4)   = aux(1)
+   end subroutine swapxyz
+
+   !> @brief swap x, y & z terms
+   subroutine swapzxy(v)
+     real(dp_t), intent(inout) :: v(:)
+     real(dp_t) :: aux(3)
+     
+   ! velocity 1=x, 2=y, 3=z
+     aux(1:3) = v(2:4)
+     v(2)   = aux(2)
+     v(3)   = aux(3)
+     v(4)   = aux(1)
+   end subroutine swapzxy
+
+    !> @brief compute flux based on primitive input 
+   pure function prim_flux(w) result(fx)
+     real(dp_t), intent(in) :: w(:)
+     real(dp_t) :: fx(1:size(w))
+     real(dp_t) :: p, E
+     
+     p = w(5)
+     E = energy(w)
+     
+     fx(1)  =  w(1)*w(2)			! rho*vx
+     fx(2)  = fx(1)*w(2) + p		! rho*vx*vx + p
+     fx(3)  = fx(1)*w(3)  			! rho*vx*vy
+     fx(4)  = fx(1)*w(4)  			! rho*vx*vz
+     fx(5)  = (E + p)*w(2)			! (E + p)*vx
+   end function prim_flux
+
+   !> @brief compute fluid energy from primitives
+   pure function energy(p) result(E)
+     real(dp_t), intent(in) :: p(:)
+     real(dp_t) :: E
+     E = p(5)*gamma7 + half*sum(p(2:4)**2)/p(1)
+   end function energy
+
+   !> @brief compute fluid pressure from conservatives
    pure function press(q) result (p)
-     real(dp), intent(in) :: q(:)
-     real(dp) :: p
-     p = (gamma-1d0)*(q(5) - half*sum(q(2:4)**2/q(1)))
+     real(dp_t), intent(in) :: q(:)
+     real(dp_t) :: p
+     p = gamma1*(q(5) - half*sum(q(2:4)**2)/q(1))
    end function press
    
-   !> @brief roe solver
-   subroutine roe(nvar, ic, ucl, ucr, f)
-     integer, intent(in) :: ic, nvar
-     real(dp), dimension(nvar), intent(in ) :: ucl,ucr
-     real(dp), dimension(nvar), intent(out) :: f
-     real(dp)                               :: dl,ul,vl,vvl,pl,dr,ur,vr,vvr,pr,vc,g1
-     real(dp)                               :: sqrtdl,sqrtdr,vxroe,vyroe,vzroe,hroe
-     real(dp)                               :: el,er,sqrtd
-     real(dp), dimension(nvar     )         :: ulocl,ulocr,lambda,a,fl,fr,ff
-     real(dp), dimension(nvar,nvar)         :: lem,rem
-     integer                                :: n,h
-     
-     do n = 1,nvar
-        ulocl(n) = ucl(ivar(n,ic))
-        ulocr(n) = ucr(ivar(n,ic))
-     enddo
-     g1 = gamma - one
-   
-   ! Convert to primitive quantities
-     dl  = ulocl(1)
-     ul  = ulocl(2)!/ulocl(1)
-     vl  = ulocl(3)!/ulocl(1)
-     vvl = ulocl(4)!/ulocl(1)
-     pl  = ulocl(5)!g1*(ulocl(5) - half*(ulocl(2)*ulocl(2)+ulocl(3)*ulocl(3)+ulocl(4)*ulocl(4))/ulocl(1))
-     el  = pl*gamma7 + half*dl*(ul*ul + vl*vl + vvl*vvl)
-     
-     dr  = ulocr(1)
-     ur  = ulocr(2)!/ulocr(1)
-     vr  = ulocr(3)!/ulocr(1)
-     vvr = ulocr(4)!/ulocr(1)
-     pr  = ulocr(5)!g1*(ulocr(5) - half*(ulocr(2)*ulocr(2)+ulocr(3)*ulocr(3)+ulocr(4)*ulocr(4))/ulocr(1))
-     er  = pr*gamma7 + half*dr*(ur*ur + vr*vr + vvr*vvr)
-     
-   ! Step 1 : Compute Roe-averaged data from left and right states
-   !   These averages will be the input variables to the eigen problem
-     sqrtdl = sqrt(dl)
-     sqrtdr = sqrt(dr)
-     sqrtd  = one/(sqrtdl + sqrtdr)
-     vxroe  = (sqrtdl*ul  + sqrtdr*ur )*sqrtd
-     vyroe  = (sqrtdl*vl  + sqrtdr*vr )*sqrtd
-     vzroe  = (sqrtdl*vvl + sqrtdr*vvr)*sqrtd
-     hroe   = ((el+pl)/sqrtdl+(er+pr)/sqrtdr)*sqrtd
-   
-     ! Step 2 : Compute eigenvalues and eigenmatrices from Roe-averaged values
-     call eigen_cons(nvar,vxroe,vyroe,vzroe,hroe,lambda,rem,lem)
-   
-     ! Step 3 : Create intermediate states from eigenmatrices
-     a(1:nvar) = (ulocr(1)-ulocl(1))*lem(1,1:nvar)
-     do n = 2,nvar
-        a(1:nvar) = a(1:nvar) + (ulocr(n)-ulocl(n))*lem(n,1:nvar)
-     enddo
-   
-     ! Step 4 : Compute L/R fluxes
-     !  These are computed from the left and right input primitive variables
-   
-     fl(1) = ulocl(2)
-     fr(1) = ulocr(2)
-   
-     fl(2) = ulocl(2)*ul + pl
-     fr(2) = ulocr(2)*ur + pr
-   
-     fl(3) = ulocl(2)*vl
-     fr(3) = ulocr(2)*vr
-   
-     fl(4) = ulocl(2)*vvl
-     fr(4) = ulocr(2)*vvr
-   
-     fl(5) = (ulocl(5)+pl)*ul
-     fr(5) = (ulocr(5)+pr)*ur
-   
-     ! Compute Roe intermediate states
-     do n = 1,nvar
-        f(ivar(n,ic)) = half*(fl(n)+fr(n))
-     enddo
-     ! now add in eignevalue decomposition...
-     do n = 1,nvar
-        do h = 1,nvar
-           f(ivar(h,ic)) = f(ivar(h,ic)) - half*abs(lambda(n))*a(n)*rem(n,h)
-        enddo
-     enddo
-   
-   end subroutine roe
-   
-   !> @brief solve
-   subroutine hlle(nvar, ic, ucl,ucr,f)
-    integer                  , intent(in ) :: nvar,ic
-    real(dp), dimension(nvar), intent(in ) :: ucl,ucr
-    real(dp), dimension(nvar), intent(out) :: f
-    real(dp)                               :: dl,ul,vl,vvl,pl,dr,ur,vr,vvr,pr
-    real(dp)                               :: vc,bp,bm,cfl,cfr,g1
-    real(dp)                               :: sqrtdl,sqrtdr,vxroe,vyroe,vzroe,hroe
-    real(dp), dimension(nvar     )         :: ulocl,ulocr,lambda,a,fl,fr,ff
-    real(dp), dimension(nvar,nvar)         :: lem,rem
-    integer                                :: n
-   
-    do n = 1,nvar
-       ulocl(n) = ucl(ivar(n,ic))
-       ulocr(n) = ucr(ivar(n,ic))
-    enddo
-    g1 = gamma - one
-    
-    ! Convert to primitive quantities
-    dl  = ulocl(1)
-    ul  = ulocl(2)/ulocl(1)
-    vl  = ulocl(3)/ulocl(1)
-    vvl = ulocl(4)/ulocl(1)
-    pl  = g1*(ulocl(5) - half*(ulocl(2)*ulocl(2)+ulocl(3)*ulocl(3)+ulocl(4)*ulocl(4))/ulocl(1))
-    
-    dr  = ulocr(1)
-    ur  = ulocr(2)/ulocr(1)
-    vr  = ulocr(3)/ulocr(1)
-    vvr = ulocr(4)/ulocr(1)
-    pr  = g1*(ulocr(5) - half*(ulocr(2)*ulocr(2)+ulocr(3)*ulocr(3)+ulocr(4)*ulocr(4))/ulocr(1))
-   
-    ! Step 1 : Compute Roe-averaged data from left and right states
-    !   These averages will be the input variables to the eigen problem
-    sqrtdl = sqrt(dl)
-    sqrtdr = sqrt(dr)
-    vxroe  = (sqrtdl*ul  + sqrtdr*ur )/(sqrtdl+sqrtdr)
-    vyroe  = (sqrtdl*vl  + sqrtdr*vr )/(sqrtdl+sqrtdr)
-    vzroe  = (sqrtdl*vvl + sqrtdr*vvr)/(sqrtdl+sqrtdr)
-    hroe   = ((ulocl(5)+pl)/sqrtdl+(ulocr(5)+pr)/sqrtdr)/(sqrtdl+sqrtdr)
-   
-    ! Step 2 : Compute eigenvalues and eigenmatrices from Roe-averaged values
-    call eigen_cons(nvar,vxroe,vyroe,vzroe,hroe,lambda,rem,lem)
-   
-    ! Step 3 : Create intermediate states from eigenmatrices
-    a(:) = (ulocr(1)-ulocl(1))*lem(1,:)
-    do n = 2,nvar
-       a(:) = a(:) + (ulocr(n)-ulocl(n))*lem(n,:)
-    enddo
-   
-    ! Step 4 : Compute L/R fluxes
-    !  These are computed from the left and right input primitive variables
-   
-    fl(1) = ulocl(2)
-    fr(1) = ulocr(2)
-   
-    fl(2) = ulocl(2)*ul + pl
-    fr(2) = ulocr(2)*ur + pr
-   
-    fl(3) = ulocl(2)*vl
-    fr(3) = ulocr(2)*vr
-   
-    fl(4) = ulocl(2)*vvl
-    fr(4) = ulocr(2)*vvr
-   
-    fl(5) = (ulocl(5)+pl)*ul
-    fr(5) = (ulocr(5)+pr)*ur
-   
-    ! Compute HLLE wave speeds
-    cfl = sqrt(gamma*pl/dl)
-    cfr = sqrt(gamma*pr/dr)
-    bp  = max( max(lambda(5), (ur+cfr)), zero )
-    bm  = min( min(lambda(1), (ul-cfl)), zero )
-   
-    do n = 1,nvar
-       f(ivar(n,ic)) = ((bp*fl(n)-bm*fr(n))+(bp*bm)*(ulocr(n)-ulocl(n)))/(bp-bm)
-    enddo
-   
-   end subroutine hlle
-   
-   
-   !> @brief solve the eigenvalue problem
-   subroutine eigen_cons(nvar,vx,vy,vz,hr,lambda,rem,lem)
-     integer, intent(in)            :: nvar
-     real(dp)                       :: vx,vy,vz,hr,cs,vsq,norm,g1
-     real(dp), dimension(nvar     ) :: lambda
-     real(dp), dimension(nvar,nvar) :: rem,lem
-   
-     vsq  = vx*vx + vy*vy + vz*vz
-     cs   = sqrt(g1*max((hr-half*vsq),epsilon(vsq)))
-     norm = half/(cs*cs)
-     g1 = gamma - one
-   
-     ! eigenvalues
-     lambda(1) = vx - cs
-     lambda(2) = vx
-     lambda(3) = vx
-     lambda(4) = vx
-     lambda(5) = vx + cs
-   
-     ! right eigenmatrix  
-     rem(1,1) = one
-     rem(1,2) = vx - cs
-     rem(1,3) = vy
-     rem(1,4) = vz
-     rem(1,5) = hr - vx*cs
-   
-     rem(2,1) = zero
-     rem(2,2) = zero
-     rem(2,3) = one
-     rem(2,4) = zero
-     rem(2,5) = vy
-   
-     rem(3,1) = zero
-     rem(3,2) = zero
-     rem(3,3) = zero
-     rem(3,4) = one
-     rem(3,5) = vz
-   
-     rem(4,1) = one
-     rem(4,2) = vx
-     rem(4,3) = vy
-     rem(4,4) = vz
-     rem(4,5) = half * vsq
-   
-     rem(5,1) = one
-     rem(5,2) = vx + cs
-     rem(5,3) = vy
-     rem(5,4) = vz
-     rem(5,5) = hr + vx*cs
-   
-     ! left eigenmatrix
-     lem(1,1) =  norm*(half*g1*vsq + vx*cs)
-     lem(2,1) = -norm*(g1*vx + cs)
-     lem(3,1) = -norm*g1*vy
-     lem(4,1) = -norm*g1*vz
-     lem(5,1) =  norm*g1
-   
-     lem(1,2) = -vy
-     lem(2,2) =  zero
-     lem(3,2) =  one
-     lem(4,2) =  zero
-     lem(5,2) =  zero
-   
-     lem(1,3) = -vz
-     lem(2,3) =  zero
-     lem(3,3) =  zero
-     lem(4,3) =  one
-     lem(5,3) =  zero
-   
-     lem(1,4) =  one-norm*g1*vsq
-     lem(2,4) =  g1*vx/(cs*cs)
-     lem(3,4) =  g1*vy/(cs*cs)
-     lem(4,4) =  g1*vz/(cs*cs)
-     lem(5,4) = -g1/(cs*cs)
-   
-     lem(1,5) =  norm*(half*g1*vsq - vx*cs)
-     lem(2,5) = -norm*(g1*vx - cs)
-     lem(3,5) =  lem(3,1)
-     lem(4,5) =  lem(4,1)
-     lem(5,5) =  lem(5,1)
-   end subroutine eigen_cons
 end module solvers
