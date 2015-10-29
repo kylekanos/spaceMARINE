@@ -26,6 +26,7 @@ module source_module
    !> @brief initializes sources
    subroutine source_init
       integer :: ierr, i
+      return
      open(unit=10,file='cooling.tab',iostat=ierr)
      if(ierr/=0) then
         print *,"Error: unable to find cooling.tab, no cooling run enabled"
