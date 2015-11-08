@@ -220,8 +220,8 @@ module advance_module
      do j=lo(2)-1,hi(2)+1
         do i=lo(1),hi(1)+1
 
-           pl(1:nvar) = q(1:nvar, i-1, j) + half*dv(1:nvar, 1, i-1, j)
-           pr(1:nvar) = q(1:nvar, i  , j) - half*dv(1:nvar, 1, i  , j)
+           pl(1:nvar) = q(1:nvar, i-1, j) - half*dv(1:nvar, 1, i-1, j)
+           pr(1:nvar) = q(1:nvar, i  , j) + half*dv(1:nvar, 1, i  , j)
            
            fx(i, j, 1:nvar) = solver(nvar, pl(1:nvar), pr(1:nvar))
         enddo !- i
@@ -234,8 +234,8 @@ module advance_module
      do j=lo(2),hi(2)+1
         do i=lo(1)-1,hi(1)+1
 
-           pl(1:nvar) = q(1:nvar, i, j-1) + half*dv(1:nvar, 2, i, j-1)
-           pr(1:nvar) = q(1:nvar, i, j  ) - half*dv(1:nvar, 2, i, j  )
+           pl(1:nvar) = q(1:nvar, i, j-1) - half*dv(1:nvar, 2, i, j-1)
+           pr(1:nvar) = q(1:nvar, i, j  ) + half*dv(1:nvar, 2, i, j  )
 
            call swapy(pl)
            call swapy(pr)
